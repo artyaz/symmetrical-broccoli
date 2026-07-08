@@ -1,0 +1,24 @@
+{
+  "name": "PAX Prime 2015 Food Pack C (Cherry)",
+  "official": true,
+  "white": [
+    "A Mexican child trapped inside of a burrito.",
+    "Clams Attempt Harmonica",
+    "Committing suicide.",
+    "Faulty UIDs.",
+    "Jizz-flavored coffee.",
+    "The Helvetica Scenario.",
+    "the hot duke",
+    "the incestuous pleasure of his bed"
+  ],
+  "black": [
+    {
+      "text": "Excuse me, waiter. Could take this back? This soup tastes like ___.",
+      "pick": 1
+    },
+    {
+      "text": "Now on Netflix: Jiro Dreams of ___.",
+      "pick": 1
+    }
+  ]
+}

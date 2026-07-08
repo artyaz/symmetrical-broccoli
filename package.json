@@ -1,0 +1,21 @@
+{
+  "name": "symmetrical-broccoli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A 3D animated Cards Against Humanity web game. Vite + Svelte. Minimal UI, maximal juice.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "stats": "vite build --mode=stats && node scripts/print-bundle-sizes.js"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "svelte": "^5.56.4",
+    "vite": "^8.1.1"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  }
+}
