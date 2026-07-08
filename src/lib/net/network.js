@@ -156,12 +156,25 @@ function handleHostMessage(conn, data) {
 }
 
 // Broadcast the current game state to all connected guests.
+// Strips any field starting with `_` (host-internal data like deck contents)
+// to keep payload small. Guests receive a public view; the host keeps the
+// full state in its local store.
 export function broadcastState(state) {
-  // `state` is optional — if omitted, we use the latest from the game store
-  // (host calls this with the actual state object).
+  if (!state) return;
+  const publicState = sanitizeForBroadcast(state);
   for (const conn of _connections.values()) {
-    if (conn.open) send(conn, { type: MSG.STATE, state });
+    if (conn.open) send(conn, { type: MSG.STATE, state: publicState });
   }
+}
+
+function sanitizeForBroadcast(state) {
+  // Shallow-clone and strip underscore-prefixed keys.
+  const out = {};
+  for (const k of Object.keys(state)) {
+    if (k.startsWith('_')) continue;
+    out[k] = state[k];
+  }
+  return out;
 }
 
 // ----- GUEST ---------------------------------------------------------------

@@ -5,6 +5,7 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { restoreSession } from './lib/stores/session.js';
+import './styles/global.css';
 
 // 1. Restore any saved session synchronously so the first route renders
 //    with the right context (returning player vs first-time visitor).

@@ -1,0 +1,63 @@
+/* global.css — Sent across all views. Kept tiny (under 1kb gzipped) so it
+   can be inlined or shipped with the entry chunk.
+   View-specific styles live inside each .svelte file as scoped <style>. */
+
+/* ---- View Transitions API ----
+   When the router calls `document.startViewTransition()`, the browser
+   snapshots the old DOM and crossfades to the new one. We override the
+   default 250ms crossfade with a longer, juicier one for hero moments,
+   while keeping default for most elements. */
+
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(app-root) {
+  animation: broccoli-fade-out 220ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+::view-transition-new(app-root) {
+  animation: broccoli-fade-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes broccoli-fade-out {
+  to { opacity: 0; transform: scale(0.97); }
+}
+@keyframes broccoli-fade-in {
+  from { opacity: 0; transform: scale(1.02) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ---- Reduced motion: kill view transitions ---- */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* ---- Selection + scrollbar ---- */
+::selection {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* Hide scrollbars but keep scrollability on touch devices. */
+@media (pointer: coarse) {
+  ::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+}
+
+/* Default body overscroll behavior — never bounce the page. */
+html, body {
+  overscroll-behavior: none;
+  text-rendering: optimizeLegibility;
+}
+
+/* Focus ring — minimal but visible. */
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

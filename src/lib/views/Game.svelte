@@ -16,6 +16,7 @@
   import { session } from '../stores/session.js';
   import { navigate } from '../router.js';
   import { disconnect, connState } from '../net/network.js';
+  import { shake, burst, hitStop } from '../anim/juice.js';
   import Table from '../components/Table.svelte';
   import Hand from '../components/Hand.svelte';
 
@@ -76,6 +77,21 @@
       if (p !== PHASE.PROMPT && p !== PHASE.PLAYING) {
         selected = [];
       }
+      // Phase-driven juice:
+      //   - REVEAL: subtle shake when the first card flips.
+      //   - SCORING: bigger shake + particle burst on winner.
+      if (p === PHASE.REVEAL && lastPhase === PHASE.PLAYING) {
+        shake(4, 200);
+        hitStop(80);
+      }
+      if (p === PHASE.SCORING && lastPhase === PHASE.VOTING) {
+        shake(10, 360);
+        hitStop(160);
+        // Burst from screen center — the winner card is rendered there.
+        setTimeout(() => {
+          burst(window.innerWidth / 2, window.innerHeight / 2, 32, { distancePx: 180, durationMs: 1100 });
+        }, 80);
+      }
       lastPhase = p;
     }
   });
@@ -83,10 +99,16 @@
   function handleSelect(next) { selected = next; }
   function handlePlay() {
     if (selected.length !== (blackCard?.pick || 1)) return;
+    // Small "throw" feedback: brief shake on play.
+    shake(3, 160);
     actions.pickCards(selected);
     selected = [];
   }
-  function revealNext() { actions.revealNext(); }
+  function revealNext() {
+    // Each reveal gets a tiny shake — feels like a card being slammed down.
+    shake(2, 140);
+    actions.revealNext();
+  }
   function vote(idx) { actions.vote(idx); }
   function czarPick(idx) { actions.czarPick(idx); }
   function nextRound() { actions.nextRound(); }
