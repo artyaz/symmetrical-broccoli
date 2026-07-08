@@ -36,15 +36,26 @@
 
   let cardEl;
 
+  // Coarse-pointer devices (touch) shouldn't get the cursor-driven tilt — a
+  // finger drag already obscures the card and the tilt would jitter as the
+  // finger moves during a scroll. We still want the lift on tap, which is
+  // handled separately by `selPulse` in onTap.
+  const finePointer = typeof window !== 'undefined'
+    && window.matchMedia?.('(pointer: fine)')?.matches;
+
   function onMove(e) {
     if (disabled) return;
+    if (!finePointer) return;
     const r = cardEl.getBoundingClientRect();
     const px = (e.clientX - r.left) / r.width;   // 0..1
     const py = (e.clientY - r.top) / r.height;   // 0..1
     // Tilt range: ±8 degrees. Pointer-right → negative Y rotation (top tilts right).
+    // Reduce the lift on small screens so the card doesn't pop out of the fan
+    // as aggressively — 36px on a 90px-wide card would feel enormous.
+    const small = window.innerWidth <= 640;
     tiltY.set((px - 0.5) * -16);
     tiltX.set((py - 0.5) * 14);
-    liftZ.set(36);
+    liftZ.set(small ? 20 : 36);
     onhover({ index, text });
   }
 
@@ -137,10 +148,17 @@
     transition: box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
     will-change: transform;
   }
-  .card-wrap:hover .card {
-    box-shadow:
-      0 18px 40px -10px rgba(0, 0, 0, 0.7),
-      0 0 0 1px rgba(255, 255, 255, 0.06);
+  /* Only apply the hover-lift box-shadow on devices that actually have a
+     hover affordance. On touch screens `:hover` can stick after a tap and
+     leave a card looking permanently lifted, so we gate the rule behind
+     `@media (hover: hover)`. The pointer-driven tilt (rotateX/Y) already
+     only fires on pointermove, so it doesn't fire on a pure tap. */
+  @media (hover: hover) {
+    .card-wrap:hover .card {
+      box-shadow:
+        0 18px 40px -10px rgba(0, 0, 0, 0.7),
+        0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
   }
   .card-wrap[data-selected='true'] .card {
     box-shadow:
@@ -188,5 +206,25 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .card-wrap, .card, .ring { transition: none !important; animation: none !important; }
+  }
+  /* Mobile / small viewport — shrink cards so a hand of 7-10 still fits
+     comfortably on a phone screen. We also reduce the tilt lift so the card
+     doesn't pop out of the fan as aggressively when a finger drags over it. */
+  @media (max-width: 640px) {
+    .card-wrap {
+      width: 90px;
+      height: 127px;
+    }
+    .face {
+      padding: 10px 10px 20px;
+    }
+    .text {
+      font-size: 11px;
+      line-height: 1.28;
+    }
+    .mark {
+      font-size: 7px;
+      letter-spacing: 0.14em;
+    }
   }
 </style>

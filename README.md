@@ -50,6 +50,52 @@ npm run build
 npm run stats   # prints bundle sizes & verifies the 14kb target
 ```
 
+## Deploy
+
+The app is auto-deployed to **GitHub Pages** on every push to `main` by the
+workflow in [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml).
+The workflow:
+
+1. Checks out the repo, sets up Node 22, and runs `npm ci && npm run build`.
+2. Uploads `dist/` as a Pages artifact via `actions/upload-pages-artifact@v3`.
+3. Deploys the artifact to the `github-pages` environment via
+   `actions/deploy-pages@v4`.
+
+The site lives at `https://artyaz.github.io/symmetrical-broccoli/`.
+
+The `base` path is derived from `GITHUB_REPOSITORY` in
+[`vite.config.js`](vite.config.js) so the same build works locally (where
+`base = '/'`) and on Pages (where `base = '/symmetrical-broccoli/'`). Routing
+is hash-based, so **no SPA fallback is needed** on Pages — every route lives
+after the `#` and is resolved client-side.
+
+To deploy manually (e.g. from a branch other than `main`), open the
+**Actions** tab and run the "Deploy to GitHub Pages" workflow via
+`workflow_dispatch`.
+
+First-time setup (one-off, per repository): in **Settings → Pages → Build and
+deployment → Source**, choose **GitHub Actions**. The workflow handles the
+rest.
+
+## Mobile
+
+The UI is responsive down to ~360px portrait phones. Key breakpoints:
+
+- **Cards in hand** shrink from 130×184 to 90×127 at `max-width: 640px`.
+- **Hand fan arc** flattens from 3° to 1.5° per card so 7–10 small cards
+  don't overlap.
+- **Black card** shrinks from 200×280 to 140×196 (same 5:7 aspect ratio).
+- **Submission cards** on the table shrink to match the hand cards.
+- **Topbar** wraps onto multiple lines if needed; the round pill can drop to
+  a second row.
+- **Lobby grid** collapses to a single column at `max-width: 720px` (already
+  present).
+- **Touch input**: the cursor-driven 3D tilt is gated behind
+  `@media (hover: hover)` and `(pointer: fine)` so it never fires on a pure
+  tap. Sticky `:hover` states are avoided for the same reason.
+
+All animations respect `prefers-reduced-motion`.
+
 ## Architecture
 
 ```
@@ -98,6 +144,49 @@ spec. Key principles applied:
 - **Reveal ceremony.** Cards enter face-down and flip on Y-axis with a slow
   ease-out so the back face is already settling by the time it's visible.
 - **`prefers-reduced-motion`** disables all animations globally.
+
+## Screenshots
+
+> _Placeholder — capture after the first Pages deploy._
+>
+> - `docs/screenshots/home.png` — landing screen with create / join actions.
+> - `docs/screenshots/lobby.png` — pre-game room with pack picker.
+> - `docs/screenshots/game.png` — mid-round table with black card + fan of white cards.
+> - `docs/screenshots/reveal.png` — czar reveal ceremony with read-aloud hint.
+> - `docs/screenshots/mobile.png` — responsive layout on a 375px phone.
+
+## Roadmap
+
+What's done:
+
+- [x] 3D animated card hover / select / play / flip / reveal
+- [x] P2P multiplayer via PeerJS (host-authoritative)
+- [x] 200+ CAH packs, lazy-loaded per pack
+- [x] Czar-pick and open-voting modes
+- [x] WebAudio synth SFX (no audio files)
+- [x] Mobile-responsive layout down to ~360px
+- [x] Connection status indicator + error overlay
+- [x] GitHub Pages auto-deploy
+
+What's **not** yet implemented (intentionally deferred):
+
+- [ ] **Spectating.** No way to join a room as a non-playing observer.
+- [ ] **Replay / history.** Round results aren't browsable after the fact;
+      only the live `history` array is shown in the gameover screen.
+- [ ] **PWA / installable.** No service worker, no `manifest.json`, no
+      offline shell — the app needs network on every load.
+- [ ] **Host migration.** If the host leaves, the room dies. Guests see a
+      "host left the room" overlay and have to start a new room.
+- [ ] **Reconnection.** A dropped peer connection (network blip) doesn't
+      auto-rejoin; the user has to manually re-enter the code.
+- [ ] **Account / persistence.** Scores and stats don't persist across
+      rooms; the localStorage session only remembers your name + last room.
+- [ ] **Card submission draft.** You can't reorder or unselect individual
+      cards in a multi-pick submission before playing.
+- [ ] **Accessibility audit.** Keyboard nav works for cards (Enter / Space)
+      but the roster, topbar, and overlay haven't been screen-reader tested.
+- [ ] **Internationalisation.** UI strings are hardcoded English.
+- [ ] **Custom card packs.** No UI to load a user-supplied JSON pack.
 
 ## License
 

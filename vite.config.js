@@ -8,7 +8,16 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 // - `modern` polyfill target strips IE / legacy cruft.
 // - `sourcemap` enabled for development only (kept off in production for size).
 
+// GitHub Pages serves this project at /<repo-name>/, not at the domain root.
+// Derive `base` from GITHUB_REPOSITORY (format: "owner/repo"). When developing
+// locally GITHUB_REPOSITORY is unset, so `base` falls back to '/'.
+// NOTE: the app uses hash routing, so no SPA fallback is needed on Pages —
+// every route lives after the `#` and is resolved client-side.
+const repo = process.env.GITHUB_REPOSITORY || '';
+const base = repo ? `/${repo.split('/')[1]}/` : '/';
+
 export default defineConfig({
+  base,
   plugins: [svelte()],
   build: {
     target: 'es2022',

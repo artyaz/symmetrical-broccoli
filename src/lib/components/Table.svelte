@@ -439,4 +439,53 @@
   @media (prefers-reduced-motion: reduce) {
     .sub, .sub-card, .winner-glow, .winner-tag, .vote-count, .read-aloud { animation: none !important; transition: none !important; }
   }
+  /* Mobile / portrait phone — shrink submission cards so 4-6 of them still
+     fit on a single row without forcing the table to scroll. The black card
+     itself is shrunk via a media query inside BlackCard.svelte (its own
+     scoped styles own the .black-card dimensions). */
+  @media (max-width: 640px) {
+    .table {
+      gap: 18px;
+      padding: 14px 8px;
+    }
+    .submissions {
+      gap: 8px;
+    }
+    .sub-card,
+    .multi {
+      width: 90px;
+      height: 127px;
+    }
+    .face {
+      padding: 10px;
+      font-size: 11px;
+      line-height: 1.26;
+    }
+    .back-num {
+      font-size: 32px;
+    }
+    .back-mark {
+      font-size: 7px;
+    }
+    .multi .sub-card {
+      transform: translateX(calc(var(--j) * 16px));
+    }
+    .multi .sub-card:enabled:hover {
+      transform: translateX(calc(var(--j) * 16px)) translateY(-8px) scale(1.04);
+    }
+    .winner-tag {
+      top: -28px;
+      font-size: 10px;
+      padding: 3px 8px;
+    }
+    .read-aloud {
+      top: -32px;
+      font-size: 9px;
+      padding: 4px 10px;
+    }
+    .reveal-next {
+      padding: 10px 18px;
+      font-size: 12px;
+    }
+  }
 </style>

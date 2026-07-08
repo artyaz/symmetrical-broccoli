@@ -89,6 +89,10 @@
     gap: 4px;
     min-height: 200px;
     padding: 0 8px;
+    /* `--fan-deg` controls the per-card rotation of the fan arc. Overridden
+       on small screens so the fan lays flatter (1.5deg vs 3deg) — a tighter
+       arc keeps 7-10 small cards from overlapping on a phone. */
+    --fan-deg: 3deg;
   }
   .slot {
     transform-origin: 50% 130%;
@@ -104,7 +108,7 @@
      produces a believable arc for hands of 5-10 cards. */
   .slot {
     transform:
-      rotateZ(calc((var(--i) - (var(--n) - 1) / 2) * 3deg))
+      rotateZ(calc((var(--i) - (var(--n) - 1) / 2) * var(--fan-deg)))
       translateY(calc((var(--i) - (var(--n) - 1) / 2) * (var(--i) - (var(--n) - 1) / 2) * -3px));
   }
   /* When a slot is hovered (via the parent state), nudge its neighbors. */
@@ -155,5 +159,22 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .slot, .play-row, .play-btn { transition: none !important; }
+  }
+  /* Mobile — flatter fan arc, tighter gaps, shorter play row so the hand
+     doesn't push the table out of view on a small portrait screen. */
+  @media (max-width: 640px) {
+    .fan {
+      --fan-deg: 1.5deg;
+      gap: 2px;
+      min-height: 150px;
+      padding: 0 4px;
+    }
+    .play-row {
+      bottom: -46px;
+    }
+    .play-btn {
+      padding: 9px 18px;
+      font-size: 12px;
+    }
   }
 </style>

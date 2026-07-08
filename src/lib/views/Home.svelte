@@ -241,4 +241,33 @@
     padding: 4px;
   }
   .link:hover { color: var(--ink); }
+
+  /* Mobile / portrait phone — shrink the hero title and tighten the
+     vertical rhythm so the create/join form stays above the fold without
+     scrolling. The clamp() on h1 already adapts; we just lower its floor. */
+  @media (max-width: 640px) {
+    .home {
+      padding: 18px;
+      gap: 36px;
+    }
+    h1 {
+      font-size: clamp(40px, 14vw, 64px);
+    }
+    .tag {
+      font-size: 12px;
+      margin-top: 10px;
+    }
+    input {
+      font-size: 18px;
+      padding: 4px 0 8px;
+    }
+    .buttons button {
+      padding: 12px 14px;
+      font-size: 12px;
+    }
+    .foot {
+      padding: 0 18px;
+      bottom: 14px;
+    }
+  }
 </style>

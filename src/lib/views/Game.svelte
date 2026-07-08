@@ -11,7 +11,8 @@
   // state changes, this view updates automatically with animations driven
   // by CSS transitions on the inner components.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { game, actions, myHand, myId, isCzar, amHost, PHASE } from '../stores/game.js';
   import { session } from '../stores/session.js';
   import { navigate } from '../router.js';
@@ -25,7 +26,6 @@
   let roomCode = $derived(params[0] || '');
 
   let selected = $state([]);
-  let unsubConn;
 
   onMount(() => {
     // If we don't have a session, send the user back to home.
@@ -33,14 +33,41 @@
       navigate('/');
       return;
     }
-    // Watch connection state — if disconnected, offer to return home.
-    unsubConn = connState.subscribe((cs) => {
-      if (cs.status === 'closed' && !$game.hostLeft) {
-        // Show "host left" overlay rather than auto-navigating away.
-      }
-    });
   });
-  onDestroy(() => unsubConn?.());
+
+  // Connection state — drives the status dot in the topbar and the full-screen
+  // error/host-left overlay. `$connState` auto-subscribes via the Svelte 5
+  // store-prefix rune syntax.
+  const conn = $derived($connState);
+  const dotColor = $derived.by(() => {
+    const s = conn.status;
+    if (s === 'hosting' || s === 'connected') return '#4ade80'; // green
+    if (s === 'idle') return '#4a4a4a';                          // gray
+    if (s === 'error' || s === 'closed') return '#ff8a8a';       // red
+    return '#facc15';                                             // yellow (reconnecting / joining)
+  });
+  const dotPulse = $derived(
+    conn.status === 'joining' || conn.status === 'reconnecting'
+  );
+  // Overlay visibility — covers the entire screen with a black backdrop and a
+  // centered message. Shown only when the connection has died in a way the
+  // user can't recover from in-place. Host never sees "host left" (they ARE
+  // the host); they only see "connection error" if their own peer fails.
+  const overlay = $derived.by(() => {
+    if (conn.status === 'error') {
+      return {
+        title: 'connection error',
+        detail: conn.error ? String(conn.error) : 'something went wrong with the network.',
+      };
+    }
+    if (conn.status === 'closed' && !amHost()) {
+      return {
+        title: 'host left the room',
+        detail: 'the room is now closed.',
+      };
+    }
+    return null;
+  });
 
   // Derived state from the game store.
   const state = $derived($game);
@@ -144,6 +171,14 @@
   <header class="topbar">
     <button class="icon-btn" onclick={leave} aria-label="leave">←</button>
     <div class="room">{roomCode}</div>
+    <span
+      class="conn-dot"
+      class:pulse={dotPulse}
+      style="background: {dotColor};"
+      role="status"
+      aria-label="connection {conn.status}"
+      title="connection: {conn.status}"
+    ></span>
     <div class="spacer"></div>
     <div class="round-pill">round {round} · to {targetScore}</div>
     <button
@@ -259,6 +294,23 @@
   {/if}
 </main>
 
+{#if overlay}
+  <div
+    class="overlay"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="overlay-title"
+    aria-describedby="overlay-detail"
+    transition:fade={{ duration: 200 }}
+  >
+    <div class="overlay-inner">
+      <h2 id="overlay-title">{overlay.title}</h2>
+      <p id="overlay-detail">{overlay.detail}</p>
+      <button class="primary" onclick={leave}>back home</button>
+    </div>
+  </div>
+{/if}
+
 <style>
   .game {
     flex: 1;
@@ -274,6 +326,28 @@
     gap: 12px;
     padding: 14px 18px;
     border-bottom: 1px solid var(--line);
+    /* Allow wrapping on narrow viewports so the room code, dot, round pill,
+       and mute button don't get crammed onto one line on a phone. */
+    flex-wrap: wrap;
+  }
+  /* Connection status indicator — 6px dot sitting next to the room code.
+     Colour is driven inline by the `dotColor` derived state; the pulse
+     animation only runs when the connection is in a transitional state
+     (joining / reconnecting). */
+  .conn-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4a4a4a;
+    flex-shrink: 0;
+    transition: background 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .conn-dot.pulse {
+    animation: conn-pulse 1.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  @keyframes conn-pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.85); }
+    50%      { opacity: 1;   transform: scale(1.15); }
   }
   .icon-btn {
     background: transparent;
@@ -446,4 +520,95 @@
     margin-bottom: 6px;
   }
   .czar-wait p { margin: 0; font-size: 13px; }
+
+  /* Full-screen error / host-left overlay. Renders above the entire game
+     surface (z-index 100) with a black backdrop and centered text. The
+     `fade` Svelte transition provides the 200ms fade-in/out. */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(0, 0, 0, 0.92);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .overlay-inner {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    align-items: center;
+    max-width: 360px;
+  }
+  .overlay-inner h2 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+  }
+  .overlay-inner p {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 14px;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+
+  /* Mobile / portrait phone — tighten paddings, shrink the round pill,
+     collapse the hand zone so the table stays visible. The roster already
+     scrolls horizontally; on mobile we shrink the player pills slightly
+     so more fit on a single row before the scroll kicks in. */
+  @media (max-width: 640px) {
+    .topbar {
+      padding: 10px 12px;
+      gap: 8px;
+    }
+    .room {
+      font-size: 12px;
+      letter-spacing: 0.24em;
+    }
+    .round-pill {
+      font-size: 10px;
+    }
+    /* On a phone the spacer between the room code and the round pill is the
+       flexible element — let it shrink to 0 so the round pill and mute
+       button can sit on the same row. If the viewport is truly tiny the
+       topbar's `flex-wrap: wrap` lets the round pill drop to a new line. */
+    .spacer {
+      min-width: 4px;
+    }
+    .roster {
+      padding: 8px 12px;
+      gap: 4px;
+    }
+    .player {
+      padding: 5px 8px;
+      font-size: 11px;
+      gap: 6px;
+    }
+    .pscore {
+      font-size: 12px;
+    }
+    .center {
+      padding: 8px;
+    }
+    .hand-zone {
+      padding: 14px 8px 24px;
+      min-height: 180px;
+    }
+    .gameover h2 {
+      font-size: 30px;
+    }
+    .overlay-inner h2 {
+      font-size: 22px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .conn-dot, .conn-dot.pulse { animation: none !important; transition: none !important; }
+  }
 </style>

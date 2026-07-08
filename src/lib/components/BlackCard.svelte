@@ -148,4 +148,25 @@
   @media (prefers-reduced-motion: reduce) {
     .black-card-inner, .shadow { animation: none !important; transform: none !important; opacity: 1 !important; }
   }
+  /* Mobile / portrait phone — shrink the black card so it doesn't dominate
+     the table on a small screen. 140×196 keeps the same 5:7 aspect ratio as
+     the desktop 200×280 and matches the visual weight of the (also shrunk)
+     white submission cards. */
+  @media (max-width: 640px) {
+    .black-card {
+      width: 140px;
+      height: 196px;
+    }
+    .black-card-inner {
+      padding: 12px 12px 12px;
+    }
+    .text {
+      font-size: 14px;
+      line-height: 1.28;
+    }
+    .footer {
+      font-size: 8px;
+      letter-spacing: 0.16em;
+    }
+  }
 </style>
