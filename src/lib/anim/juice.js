@@ -248,3 +248,65 @@ export function glowPulse(el, color = 'rgba(255,255,255,0.35)', durationMs = 120
     { duration: durationMs, easing: cssEase.juicy },
   );
 }
+
+// ---------------------------------------------------------------------------
+// CARD REVEAL CEREMONY
+// ---------------------------------------------------------------------------
+// The full "czar reveals a submission" moment. Layered juice:
+//   1. Soft halo glow pulse (glowPulse above).
+//   2. A `revealing` CSS class on the element for 600ms that scales it
+//      1.0 → 1.06 → 1.0 (signature overshoot for hero moments).
+//   3. An 80ms hit-stop on the game loop so the reveal lands with weight.
+//
+// Returns a Promise that resolves when the ceremony is complete (600ms after
+// start, or immediately under prefers-reduced-motion). The caller (Table.svelte)
+// may await this before re-enabling the reveal-next button.
+//
+// `index` is currently unused but accepted for forward compatibility (e.g.
+// staggering multiple simultaneous reveals or per-index pitch shift on the
+// snap sound — the caller passes it through for clarity).
+
+let _revealStyleInjected = false;
+function ensureRevealStyle() {
+  if (_revealStyleInjected) return;
+  _revealStyleInjected = true;
+  const s = document.createElement('style');
+  s.id = 'broccoli-reveal-style';
+  // The keyframe scales 1.0 → 1.06 → 1.0 using the signature `juicy`
+  // cubic-bezier so the overshoot reads as deliberate, not janky. We don't
+  // animate `box-shadow` here — glowPulse() handles the halo separately so the
+  // two effects can run in parallel without fighting over the same property.
+  s.textContent = `
+    .broccoli-revealing {
+      animation: broccoli-reveal-scale 600ms cubic-bezier(${cssEase.juicy}) !important;
+      will-change: transform;
+      z-index: 10;
+    }
+    @keyframes broccoli-reveal-scale {
+      0%   { transform: scale(1); }
+      45%  { transform: scale(1.06); }
+      100% { transform: scale(1); }
+    }
+  `;
+  document.head.appendChild(s);
+}
+
+export function revealCard(el, index = 0) {
+  // Reduced motion: skip the visual ceremony but still resolve, so callers
+  // can await unconditionally.
+  if (prefersReducedMotion() || !el) return Promise.resolve();
+  ensureRevealStyle();
+  // Halo glow — runs in parallel with the scale animation below.
+  glowPulse(el);
+  // Add the scale class; remove it once the 600ms animation completes so the
+  // class doesn't conflict with future hover/winner transforms on the same el.
+  el.classList.add('broccoli-revealing');
+  // Hit-stop the game loop for 80ms — this is the "weight" of the reveal.
+  hitStop(80);
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      el.classList.remove('broccoli-revealing');
+      resolve();
+    }, 600);
+  });
+}

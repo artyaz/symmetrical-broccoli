@@ -11,8 +11,11 @@
   // the easing curves from easing-helpers.js.
 
   import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import BlackCard from './BlackCard.svelte';
   import { cssEase } from '../anim/easing-helpers.js';
+  import { revealCard } from '../anim/juice.js';
+  import { play } from '../anim/audio.js';
 
   let {
     blackCard = null,
@@ -45,6 +48,55 @@
     }
     return counts;
   });
+
+  // Per-submission element refs (bind:this). Used by the reveal ceremony to
+  // grab the actual DOM node and run imperative juice on it. Stored in a
+  // plain array — not reactive — because we only read it inside an effect
+  // and we don't want ref writes to trigger re-renders.
+  let subEls = [];
+
+  // Which submission index the "read this aloud" hint is currently hovering
+  // above. -1 = hint hidden. Only meaningful when the czar is viewing.
+  let readAloudIdx = $state(-1);
+  let readAloudTimer = 0;
+
+  // Track revealedIndex transitions so we fire the ceremony exactly once per
+  // card flip. Plain (non-reactive) variable — mutated inside the effect.
+  // Initialised to -1 (matching the empty-state default) so the first reveal
+  // (idx: -1 → 0) is detected as an advance.
+  let lastRevealedIdx = -1;
+  $effect(() => {
+    const idx = revealedIndex;
+    // Fire only when the index advances while we're in the reveal phase.
+    // Skip the very first transition into REVEAL (no card is shown yet at
+    // that moment — the czar hasn't clicked "reveal next").
+    if (idx > lastRevealedIdx && idx >= 0 && phase === 'reveal') {
+      const targetIdx = idx;
+      // Defer one frame so the new data-revealed='true' attribute has been
+      // applied and the 3D flip animation has started; we want the snap
+      // sound to land on the visual flip, not before it.
+      requestAnimationFrame(() => {
+        const el = subEls[targetIdx];
+        if (!el) return;
+        play('cardFlip');
+        // revealCard() runs glowPulse + scale ceremony + 80ms hit-stop.
+        // We don't await it here — the ceremony runs in parallel with the
+        // CSS flip and the hint timer.
+        revealCard(el, targetIdx);
+      });
+      // Show the "read this aloud" hint to the czar above this card.
+      // Non-czars never see it (the {#if} below gates on isCzar).
+      if (isCzar) {
+        readAloudIdx = targetIdx;
+        if (readAloudTimer) clearTimeout(readAloudTimer);
+        readAloudTimer = setTimeout(() => {
+          readAloudIdx = -1;
+          readAloudTimer = 0;
+        }, 3000);
+      }
+    }
+    lastRevealedIdx = idx;
+  });
 </script>
 
 <div class="table" data-phase={phase}>
@@ -61,11 +113,17 @@
       {#each submissions as sub, i (i)}
         <div
           class="sub"
+          bind:this={subEls[i]}
           data-revealed={i <= revealedIndex || phase === 'voting' || phase === 'scoring'}
           data-current={i === revealedIndex && phase === 'reveal'}
           data-winner={winnerId && sub.playerId === winnerId}
           style="--i: {i};"
         >
+          {#if isCzar && phase === 'reveal' && readAloudIdx === i}
+            <div class="read-aloud" transition:fade={{ duration: 240 }}>
+              read this card aloud
+            </div>
+          {/if}
           {#if sub.cards.length === 1}
             <button
               class="sub-card single"
@@ -320,6 +378,39 @@
     white-space: nowrap;
     animation: tagin 480ms cubic-bezier(0.34, 1.56, 0.64, 1);
   }
+  /* "Read this card aloud" callout shown to the czar above the most-
+     recently-revealed submission. Fade in/out is driven by Svelte's `fade`
+     transition (240ms). The hint auto-clears after 3s via the timeout in the
+     reveal effect. */
+  .read-aloud {
+    position: absolute;
+    top: -40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--bg);
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    z-index: 12;
+    pointer-events: none;
+    box-shadow: 0 8px 20px -6px rgba(0, 0, 0, 0.6);
+  }
+  .read-aloud::after {
+    /* Tiny downward caret pointing at the card. */
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
+    width: 8px;
+    height: 8px;
+    background: var(--ink);
+  }
   @keyframes tagin {
     0% { transform: translateX(-50%) translateY(10px) scale(0.6); opacity: 0; }
     100% { transform: translateX(-50%) translateY(0) scale(1); opacity: 1; }
@@ -346,6 +437,6 @@
     margin: 0;
   }
   @media (prefers-reduced-motion: reduce) {
-    .sub, .sub-card, .winner-glow, .winner-tag, .vote-count { animation: none !important; transition: none !important; }
+    .sub, .sub-card, .winner-glow, .winner-tag, .vote-count, .read-aloud { animation: none !important; transition: none !important; }
   }
 </style>

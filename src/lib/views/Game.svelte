@@ -17,6 +17,7 @@
   import { navigate } from '../router.js';
   import { disconnect, connState } from '../net/network.js';
   import { shake, burst, hitStop } from '../anim/juice.js';
+  import { play, isMuted, setMuted } from '../anim/audio.js';
   import Table from '../components/Table.svelte';
   import Hand from '../components/Hand.svelte';
 
@@ -77,16 +78,18 @@
       if (p !== PHASE.PROMPT && p !== PHASE.PLAYING) {
         selected = [];
       }
-      // Phase-driven juice:
-      //   - REVEAL: subtle shake when the first card flips.
-      //   - SCORING: bigger shake + particle burst on winner.
+      // Phase-driven juice + audio pairing:
+      //   - REVEAL: subtle shake when the first card flips + soft swoosh.
+      //   - SCORING: bigger shake + particle burst on winner + triumphant arpeggio.
       if (p === PHASE.REVEAL && lastPhase === PHASE.PLAYING) {
         shake(4, 200);
         hitStop(80);
+        play('phaseChange');
       }
       if (p === PHASE.SCORING && lastPhase === PHASE.VOTING) {
         shake(10, 360);
         hitStop(160);
+        play('winnerReveal');
         // Burst from screen center — the winner card is rendered there.
         setTimeout(() => {
           burst(window.innerWidth / 2, window.innerHeight / 2, 32, { distancePx: 180, durationMs: 1100 });
@@ -96,11 +99,23 @@
     }
   });
 
+  // Audio mute toggle state. Initialised from the persisted preference the
+  // audio module loaded at import time (handles prefers-reduced-motion and
+  // prefers-reduced-data auto-mute too).
+  let muted = $state(isMuted());
+  function toggleMute() {
+    muted = !muted;
+    setMuted(muted);
+    // Tiny audible confirmation when un-muting so the user knows sound is on.
+    if (!muted) play('cardSelect');
+  }
+
   function handleSelect(next) { selected = next; }
   function handlePlay() {
     if (selected.length !== (blackCard?.pick || 1)) return;
-    // Small "throw" feedback: brief shake on play.
+    // Small "throw" feedback: brief shake on play + soft thunk.
     shake(3, 160);
+    play('cardDrop');
     actions.pickCards(selected);
     selected = [];
   }
@@ -131,6 +146,25 @@
     <div class="room">{roomCode}</div>
     <div class="spacer"></div>
     <div class="round-pill">round {round} · to {targetScore}</div>
+    <button
+      class="icon-btn mute-btn"
+      onclick={toggleMute}
+      aria-label={muted ? 'unmute audio' : 'mute audio'}
+      aria-pressed={muted}
+      title={muted ? 'unmute audio' : 'mute audio'}
+    >
+      {#if muted}
+        <!-- Speaker-off icon: speaker + X. -->
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path fill="currentColor" d="M5 9v6h4l5 5V4L9 9H5zm12.5 3l2.5-2.5-1-1L16 11l-3-3-1 1 3 3-3 3 1 1 3-3 2.5 2.5 1-1L16.5 12z"/>
+        </svg>
+      {:else}
+        <!-- Speaker-on icon: speaker + sound waves. -->
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path fill="currentColor" d="M5 9v6h4l5 5V4L9 9H5zm11.5 1.5c1.5 1 1.5 3 0 4l-.7-.7c1-1 1-1.6 0-2.6l.7-.7zM18.5 9c2.5 1.8 2.5 6.2 0 8l-.7-.7c2-1.5 2-5 0-6.6l.7-.7z"/>
+        </svg>
+      {/if}
+    </button>
   </header>
 
   <section class="roster">
@@ -249,8 +283,21 @@
     font-size: 16px;
     cursor: pointer;
     padding: 4px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 180ms cubic-bezier(0.85, 0, 0.15, 1), transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
   }
   .icon-btn:hover { color: var(--ink); }
+  .icon-btn:active { transform: scale(0.92); }
+  .mute-btn {
+    /* icon-only mute toggle in the top-right; sits flush against the round pill */
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    line-height: 0;
+  }
+  .mute-btn svg { display: block; }
   .room {
     font-size: 13px;
     font-weight: 800;
