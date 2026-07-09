@@ -12,7 +12,7 @@ import { writable } from 'svelte/store';
 export const ROUTES = {
   home: { pattern: /^\/?$/, loader: () => import('./views/Home.svelte') },
   lobby: { pattern: /^\/lobby\/([A-Z0-9]{4})\/?$/, loader: () => import('./views/Lobby.svelte') },
-  game: { pattern: /^\/game\/([A-Z0-9]{4})\/?$/, loader: () => import('./views/Game.svelte') },
+  game: { pattern: /^\/game\/([A-Z0-9]{4})\/?$/, loader: () => import('./views/Game3D.svelte') },
   join: { pattern: /^\/join\/?$/, loader: () => import('./views/Join.svelte') },
   packs: { pattern: /^\/packs\/?$/, loader: () => import('./views/Packs.svelte') },
 };

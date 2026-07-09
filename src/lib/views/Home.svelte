@@ -9,12 +9,69 @@
   import { game, wireNetwork, setHostRole, actions } from '../stores/game.js';
 
   let name = $state('');
+  let photo = $state(null);  // data URL of user's chosen photo (for avatar face)
   let creating = $state(false);
   let error = $state(null);
 
   onMount(() => {
     name = $session?.name || '';
+    photo = $session?.photo || null;
   });
+
+  // Handle file input — read image, downscale to 256x256, store as data URL.
+  // We downscale to keep PeerJS broadcast size small + texture load fast.
+  async function onPhotoChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      error = 'photo must be an image.';
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      error = 'photo too large (max 8mb).';
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const img = await loadImage(dataUrl);
+      // Center-crop to square, downscale to 256x256.
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      const size = Math.min(img.width, img.height);
+      const sx = (img.width - size) / 2;
+      const sy = (img.height - size) / 2;
+      ctx.drawImage(img, sx, sy, size, size, 0, 0, 256, 256);
+      photo = canvas.toDataURL('image/jpeg', 0.85);
+      setSession({ photo });
+      error = null;
+    } catch (e) {
+      error = 'could not load photo.';
+    }
+  }
+
+  function clearPhoto() {
+    photo = null;
+    setSession({ photo: null });
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+  }
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
 
   async function createRoom() {
     if (!name.trim()) {
@@ -28,7 +85,7 @@
       const ip = await getPublicIP();
       const { code, peerId } = await hostRoom({ name: name.trim(), fingerprint: fp, ip });
       // Save session so a refresh can rejoin.
-      setSession({ name: name.trim(), roomCode: code, peerId, role: 'host', fingerprint: fp, ip });
+      setSession({ name: name.trim(), roomCode: code, peerId, role: 'host', fingerprint: fp, ip, photo });
       setHostRole(true);
       wireNetwork({ isHost: true });
       actions.setRoom(code);
@@ -36,7 +93,7 @@
       // Add myself as a player.
       game.update((s) => ({
         ...s,
-        players: [{ id: peerId, name: name.trim(), score: 0, isHost: true, connected: true, fingerprint: fp, ip }],
+        players: [{ id: peerId, name: name.trim(), score: 0, isHost: true, connected: true, fingerprint: fp, ip, photo }],
       }));
       navigate(`/lobby/${code}`);
     } catch (e) {
@@ -53,7 +110,7 @@
       error = 'pick a name.';
       return;
     }
-    setSession({ name: name.trim() });
+    setSession({ name: name.trim(), photo });
     navigate('/join');
   }
 
@@ -75,6 +132,22 @@
   </section>
 
   <section class="actions">
+    <div class="photo-row">
+      <label class="photo-picker" class:has-photo={photo}>
+        {#if photo}
+          <img src={photo} alt="your avatar" />
+          <button class="photo-clear" onclick={(e) => { e.preventDefault(); clearPhoto(); }} aria-label="clear photo">×</button>
+        {:else}
+          <span class="photo-placeholder">+</span>
+        {/if}
+        <input type="file" accept="image/*" onchange={onPhotoChange} />
+      </label>
+      <div class="photo-hint">
+        <span>your face</span>
+        <small>stretched onto a 3d head. pick something funny.</small>
+      </div>
+    </div>
+
     <label class="field">
       <span>your name</span>
       <input
@@ -144,6 +217,83 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+  .photo-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .photo-picker {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    border: 1px dashed var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    overflow: hidden;
+    flex-shrink: 0;
+    transition: border-color 180ms ease, transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .photo-picker:hover {
+    border-color: var(--ink);
+    transform: scale(1.04);
+  }
+  .photo-picker.has-photo {
+    border-style: solid;
+    border-color: var(--ink);
+  }
+  .photo-picker img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .photo-placeholder {
+    font-size: 24px;
+    color: var(--ink-dim);
+    font-weight: 300;
+    line-height: 1;
+  }
+  .photo-clear {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--ink);
+    color: var(--bg);
+    border: 2px solid var(--bg);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .photo-picker input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .photo-hint {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    color: var(--ink-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .photo-hint small {
+    font-size: 10px;
+    color: var(--ink-dim);
+    text-transform: none;
+    letter-spacing: 0.02em;
+    opacity: 0.7;
   }
   .field {
     display: flex;

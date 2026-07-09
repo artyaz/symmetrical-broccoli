@@ -24,8 +24,9 @@
     try {
       const fp = getFingerprint();
       const ip = await getPublicIP();
-      const { peerId } = await joinRoom({ code, name: name.trim(), fingerprint: fp, ip });
-      setSession({ name: name.trim(), roomCode: code, peerId, role: 'guest', fingerprint: fp, ip });
+      const photo = $session?.photo || null;
+      const { peerId } = await joinRoom({ code, name: name.trim(), fingerprint: fp, ip, photo });
+      setSession({ name: name.trim(), roomCode: code, peerId, role: 'guest', fingerprint: fp, ip, photo });
       setHostRole(false);
       wireNetwork({ isHost: false });
       navigate(`/game/${code}`);

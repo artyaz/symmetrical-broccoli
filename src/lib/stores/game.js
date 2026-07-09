@@ -60,6 +60,12 @@ const emptyState = () => ({
 });
 
 export const game = writable(emptyState());
+// In dev mode, expose the store on window for testing/debugging.
+if (import.meta.env && import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__game = game;
+  window.__gameSet = (s) => game.set(s);
+  window.__gameUpdate = (fn) => game.update(fn);
+}
 let _isHost = false;
 let _meId = null;
 

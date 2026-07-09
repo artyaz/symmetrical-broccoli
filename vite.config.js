@@ -35,10 +35,12 @@ export default defineConfig({
         // Manual chunks: keep the entry shell tiny, push everything else out.
         manualChunks(id) {
           if (id.includes('node_modules/peerjs')) return 'vendor-peer';
+          if (id.includes('node_modules/three')) return 'vendor-three';
           if (id.includes('node_modules')) return 'vendor';
           if (id.includes('/src/lib/data/packs/')) return 'card-data';
           if (id.includes('/src/lib/data/')) return 'card-meta';
           if (id.includes('/src/lib/anim/')) return 'anim';
+          if (id.includes('/src/lib/three/')) return 'three';
           if (id.includes('/src/lib/views/')) return 'views';
           if (id.includes('/src/lib/components/')) return 'ui';
           if (id.includes('/src/lib/net/')) return 'net';

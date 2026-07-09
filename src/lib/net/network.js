@@ -133,6 +133,9 @@ function handleHostMessage(conn, data) {
         name: (data.name || 'Guest').slice(0, 24),
         fingerprint: data.fingerprint,
         ip: data.ip,
+        // Photo is a 256x256 JPEG data URL (~10-20kb). Included in HELLO so
+        // the host can broadcast it to all guests in the next state snapshot.
+        photo: typeof data.photo === 'string' && data.photo.length < 100000 ? data.photo : null,
         isHost: false,
         connectedAt: Date.now(),
       };
@@ -179,12 +182,12 @@ function sanitizeForBroadcast(state) {
 
 // ----- GUEST ---------------------------------------------------------------
 
-export async function joinRoom({ code, name, fingerprint, ip }) {
+export async function joinRoom({ code, name, fingerprint, ip, photo }) {
   if (!isValidCode(code)) throw new Error('Invalid room code');
   if (_peer) _peer.destroy();
   const hostId = codeToPeerId(code);
   const guestId = `broccoli-${code.toUpperCase()}-${Math.random().toString(36).slice(2, 8)}`;
-  _me = { id: guestId, name: name || 'Guest', fingerprint, ip, isHost: false };
+  _me = { id: guestId, name: name || 'Guest', fingerprint, ip, photo, isHost: false };
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -209,6 +212,7 @@ export async function joinRoom({ code, name, fingerprint, ip }) {
           name: _me.name,
           fingerprint: _me.fingerprint,
           ip: _me.ip,
+          photo: _me.photo,
         });
         connState.set({
           status: 'connected',
@@ -290,6 +294,11 @@ export function sendAction(kind, payload = {}) {
 }
 
 export function me() { return _me; }
+
+// Dev-only: allow tests to fake the local player identity.
+if (import.meta.env && import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__setMe = (m) => { _me = m; };
+}
 
 export function disconnect() {
   try { _hostConn?.close(); } catch { /* ignore */ }
