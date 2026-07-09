@@ -1,36 +1,51 @@
 /**
  * scene.js — Three.js scene manager for the symmetrical-broccoli CAH game.
  *
- * Sets up a first-person view of a "table" sitting in an infinite soft-gray
- * space. Procedural geometry only — no glTF, no external models. Cards (added
- * by other modules) are the only properly-textured objects; everything else
- * is subtle grays with soft shadows.
+ * Rebuilt (p1) to address the rendering problems diagnosed in
+ * docs/RESEARCH_3D_REBUILD.md §2–§5: low resolution, screen shuttering,
+ * poor shadows, and a flat / cheap-looking image with no post-processing.
  *
- * Design language:
- *   - Background + fog: #ECECEC warm light gray. FogExp2 density 0.018 lets
- *     the 200x200 floor fade smoothly into infinity.
- *   - Single key DirectionalLight with PCFSoftShadowMap and shadow.radius 4
- *     for buttery soft shadows. A dim fill light kills harsh black shadows
- *     on the opposite side.
- *   - Materials use roughness >= 0.7 so nothing reads as plastic or wet.
- *
- * Camera:
- *   - Default pose is a "sitting at the table" view: (0, 1.6, 1.4) looking
- *     at (0, 0.8, 0) — the player's seat (south).
- *   - Subtle head-bob (sine wave) + tiny mouse-look spring keep the scene
- *     alive without being nauseating. Both respect prefers-reduced-motion.
- *   - cameraLookCloser() tween (800ms, reveal easing) zooms the camera in
- *     for inspecting played cards; calling again returns to default.
+ * Pipeline highlights:
+ *   - WebGLRenderer: PCFSoftShadowMap, SRGBColorSpace, NoToneMapping on
+ *     the renderer (tone mapping moves into the post-processing chain —
+ *     critical to avoid double-tonemapping with pmndrs/postprocessing).
+ *   - Adaptive DPR with dirty-check resize, called every tick (cheap when
+ *     the device-pixel buffer size hasn't changed). Research §3.1.
+ *   - Delta-clamped rAF loop: `delta = min((t - last)/1000, 0.05)` so a
+ *     backgrounded tab refocus doesn't teleport animations. No fixed
+ *     timestep — our sim is reactive (Svelte store updates), not physics —
+ *     but the clamp covers the user-visible failure mode in §2.7.
+ *   - Frame-rate-independent lerp (`1 - exp(-delta / lag)`) for the camera
+ *     "look closer" toggle, mouse-look spring, and idle head-bob.
+ *   - Shadow: 4096² PCFSoftShadowMap, tight ±2 frustum (4× effective
+ *     resolution vs old ±4), near 0.5 / far 10, bias -0.0005, radius 4.
+ *   - RoomEnvironment baked once via PMREMGenerator for free IBL; PMREM
+ *     disposed after baking. Research §5.5.
+ *   - Post-processing chain (pmndrs/postprocessing + n8ao):
+ *       RenderPass → N8AOPostPass → Bloom → SMAA → ACES ToneMapping
+ *     EffectComposer uses HalfFloat HDR frame buffers + MSAA(4) baseline.
+ *     TAA deliberately skipped — see note in setupPostProcessing().
  *
  * Exports:
- *   - createScene(canvas) → { scene, camera, renderer, registerUpdate,
- *     resize, dispose, cameraLookCloser, getClock }
+ *   - createScene(canvas) → { scene, camera, renderer, composer,
+ *     registerUpdate, resize, dispose, cameraLookCloser, getClock }
  *   - SEAT_POSITIONS  (4 seats, one per cardinal direction)
  *   - TABLE_RADIUS    (2.2)
  */
 
 import * as THREE from 'three';
-import { bezier } from '../anim/easing-helpers.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import {
+  EffectComposer,
+  RenderPass,
+  EffectPass,
+  ToneMappingEffect,
+  ToneMappingMode,
+  BloomEffect,
+  SMAAEffect,
+  SMAAPreset,
+} from 'postprocessing';
+import { N8AOPostPass } from 'n8ao';
 
 // ---------------------------------------------------------------------------
 // PUBLIC CONSTANTS
@@ -41,8 +56,11 @@ export const TABLE_RADIUS = 2.2;
 
 /**
  * Seat positions around the table. `pos` is the seat origin (feet on floor);
- * `rotY` is the yaw to apply so an avatar / card fan faces the table centre.
+ * `rotY` is the yaw so an avatar / card fan faces the table centre.
  * The camera occupies the 'south' seat — that's "you".
+ *
+ * NOTE: avatar.js keeps its own copy to avoid a circular import; if you
+ * change this here, update that too.
  */
 export const SEAT_POSITIONS = [
   { id: 'south', pos: [0,    0,  1.5], rotY:  Math.PI,       label: 'you' },
@@ -52,7 +70,7 @@ export const SEAT_POSITIONS = [
 ];
 
 // ---------------------------------------------------------------------------
-// CAMERA POSES
+// CAMERA POSES + SPRING CONSTANTS
 // ---------------------------------------------------------------------------
 
 const DEFAULT_POS  = new THREE.Vector3(0, 1.6, 1.4);
@@ -60,17 +78,22 @@ const DEFAULT_LOOK = new THREE.Vector3(0, 0.8, 0);
 const CLOSER_POS   = new THREE.Vector3(0, 1.2, 0.7);
 const CLOSER_LOOK  = new THREE.Vector3(0, 0.4, 0);
 
-const LOOK_CLOSER_MS = 800;
+// Frame-rate-independent lerp lag (seconds). Per-frame factor is
+// `1 - exp(-delta / lag)`; converges with time-constant `lag` regardless of
+// frame rate. Smaller = snappier.
+const LOOK_CLOSER_LAG = 0.30;  // 300ms ease for the camera toggle
+const MOUSE_LOOK_LAG  = 0.15;  // 150ms ease for mouse-look
 
 // Mouse-look rotation limits (radians). Subtle — not FPS-style.
-const YAW_MAX_RAD   = THREE.MathUtils.degToRad(3);
-const PITCH_MAX_RAD = THREE.MathUtils.degToRad(1.5);
+const YAW_MAX_RAD   = THREE.MathUtils.degToRad(3);    // ±3°
+const PITCH_MAX_RAD = THREE.MathUtils.degToRad(1.5);  // ±1.5°
 
-// Head-bob amplitudes (metres) and frequencies (Hz).
-const BOB_Y_AMP = 0.01;
-const BOB_Y_HZ  = 0.6;
-const BOB_X_AMP = 0.005;
-const BOB_X_HZ  = 0.4;
+// Head-bob amplitudes (m) + frequencies (Hz). Subtle "living camera" feel.
+const BOB_Y_AMP = 0.008, BOB_Y_HZ = 0.6;
+const BOB_X_AMP = 0.004, BOB_X_HZ = 0.4;
+
+// Delta clamp: prevents teleport-on-refocus (research §2.7). 50ms = 20fps min.
+const MAX_DELTA = 0.05;
 
 // ---------------------------------------------------------------------------
 // PREFERS-REDUCED-MOTION
@@ -81,34 +104,11 @@ function prefersReducedMotion() {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-// ---------------------------------------------------------------------------
-// DAMPED SPRING (tiny inline impl)
-// ---------------------------------------------------------------------------
-// The easing-helpers.js exports Svelte-flavoured spring configs (stiffness /
-// damping in 0..1) which only make sense when fed to Svelte's `spring()` store.
-// For raw JS we need actual physics. This is a 1-DOF damped spring with
-// explicit mass-spring-damper coefficients; critically damped by default so
-// the mouse-look eases to its target without overshooting.
-// ---------------------------------------------------------------------------
-
-function makeDampedSpring(freqHz = 4, dampingRatio = 1.0) {
-  const omega = 2 * Math.PI * freqHz;
-  const k = omega * omega;            // stiffness
-  const c = 2 * dampingRatio * omega; // damping coefficient
-  let pos = 0;
-  let vel = 0;
-  return {
-    set(value) { pos = value; vel = 0; },
-    get() { return pos; },
-    update(target, dt) {
-      // Clamp dt to avoid blow-ups after tab-switch pauses.
-      const step = Math.min(dt, 1 / 30);
-      const force = -k * (pos - target) - c * vel;
-      vel += force * step;
-      pos += vel * step;
-      return pos;
-    },
-  };
+/** Frame-rate-independent lerp factor. `current += (target - current) * factor`
+ *  converges to target with time-constant `lag` seconds, regardless of fps.
+ *  Equivalent to integrating `dx/dt = -(x - target) / lag` over `delta`. */
+function lerpFactor(delta, lag) {
+  return 1 - Math.exp(-delta / lag);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,14 +140,18 @@ export function createScene(canvas) {
   // --- Renderer -----------------------------------------------------------
   const renderer = new THREE.WebGLRenderer({
     canvas,
-    antialias: true,
-    alpha: false, // we paint our own background
+    antialias: true,   // baseline MSAA; SMAA layered on top in the chain
+    alpha: false,      // we paint our own background
+    powerPreference: 'high-performance',
   });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  // CRITICAL: leave tone mapping OFF on the renderer. The ToneMappingEffect
+  // at the end of the post chain handles ACES; if the renderer also
+  // tone-maps, colors get double-tonemapped and look dark/muddy.
+  renderer.toneMapping = THREE.NoToneMapping;
   renderer.toneMappingExposure = 1.0;
 
   // --- Scene --------------------------------------------------------------
@@ -155,39 +159,50 @@ export function createScene(canvas) {
   scene.background = new THREE.Color(0xECECEC);
   scene.fog = new THREE.FogExp2(0xECECEC, 0.018);
 
+  // --- Environment (IBL) — bake RoomEnvironment once, dispose PMREM -------
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  // 0.04 = sigma in fromScene() blur; soft studio look without sharp
+  // reflection highlights from the procedural RoomEnvironment lights.
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  // Cap env-map contribution so PBR materials don't get double-lit by both
+  // the env map and the explicit lights (causes over-exposure).
+  scene.environmentIntensity = 0.5;
+  pmrem.dispose();
+
   // --- Camera -------------------------------------------------------------
   const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
   camera.position.copy(DEFAULT_POS);
-
-  // "Base" pose that bob/mouse/tween offsets are applied on top of.
-  const basePos  = DEFAULT_POS.clone();
-  const baseLook = DEFAULT_LOOK.clone();
+  camera.lookAt(DEFAULT_LOOK);
 
   // --- Lights -------------------------------------------------------------
-  const ambient = new THREE.AmbientLight(0xFFFFFF, 0.6);
+  // Ambient + Hemisphere dimmed slightly vs the old scene because the
+  // RoomEnvironment now contributes a soft IBL fill — stacking both at the
+  // old strengths washed everything out.
+  const ambient = new THREE.AmbientLight(0xFFFFFF, 0.25);
   scene.add(ambient);
-
-  const hemi = new THREE.HemisphereLight(0xFFFFFF, 0xDCDCDC, 0.4);
+  const hemi = new THREE.HemisphereLight(0xFFFFFF, 0xDCDCDC, 0.2);
   scene.add(hemi);
 
-  const keyLight = new THREE.DirectionalLight(0xFFFFFF, 1.2);
+  const keyLight = new THREE.DirectionalLight(0xFFFFFF, 1.0);
   keyLight.position.set(3, 6, 4);
   keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(2048, 2048);
-  keyLight.shadow.camera.left   = -4;
-  keyLight.shadow.camera.right  =  4;
-  keyLight.shadow.camera.top    =  4;
-  keyLight.shadow.camera.bottom = -4;
+  // 4096² + tight ±2 frustum = 1024 samples/unit (vs old 2048² + ±4 = 256).
+  // Avatar heads (~0.32r) go from ~80 to ~320 samples across — the
+  // difference between "pixelated" and "soft". Research §4.2.
+  keyLight.shadow.mapSize.set(4096, 4096);
+  keyLight.shadow.camera.left   = -2;
+  keyLight.shadow.camera.right  =  2;
+  keyLight.shadow.camera.top    =  2;
+  keyLight.shadow.camera.bottom = -2;
   keyLight.shadow.camera.near   = 0.5;
-  keyLight.shadow.camera.far    = 20;
+  keyLight.shadow.camera.far    = 10;
   keyLight.shadow.bias          = -0.0005;
-  keyLight.shadow.radius        = 4;
+  keyLight.shadow.radius        = 4;  // soft penumbra
   keyLight.shadow.camera.updateProjectionMatrix();
   scene.add(keyLight);
-  // DirectionalLight targets origin by default — explicit target keeps it stable.
-  scene.add(keyLight.target);
+  scene.add(keyLight.target); // explicit target keeps direction stable
 
-  const fillLight = new THREE.DirectionalLight(0xF0F0F5, 0.3);
+  const fillLight = new THREE.DirectionalLight(0xF0F0F5, 0.2);
   fillLight.position.set(-3, 4, -2);
   scene.add(fillLight);
 
@@ -204,13 +219,19 @@ export function createScene(canvas) {
   floor.receiveShadow = true;
   scene.add(floor);
 
-  // --- Table surface (subtle circular plane) ------------------------------
+  // --- Table surface ------------------------------------------------------
+  // polygonOffset pushes the table back in depth space so co-planar geometry
+  // above it (cards at y=0.03+) doesn't z-fight. Belt-and-suspenders with
+  // the physical separation cards.js applies. Research §6.1.
   const table = new THREE.Mesh(
     new THREE.CircleGeometry(TABLE_RADIUS, 64),
     new THREE.MeshStandardMaterial({
       color: 0xDEDEDE,
       roughness: 0.7,
       metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     }),
   );
   table.rotation.x = -Math.PI / 2;
@@ -231,42 +252,39 @@ export function createScene(canvas) {
   ring.position.y = 0.021; // a hair above the table to avoid z-fighting
   scene.add(ring);
 
-  // --- Initial camera orientation -----------------------------------------
-  camera.lookAt(baseLook);
+  // --- Post-processing chain ---------------------------------------------
+  const composer = setupPostProcessing(renderer, scene, camera);
 
   // --- Animation loop state ----------------------------------------------
   const clock = new THREE.Clock();
   const updateCallbacks = new Set();
   let rafId = null;
   let disposed = false;
+  let lastTime = performance.now();
 
   // Input + accessibility state.
   let reducedMotion = prefersReducedMotion();
-  const mouseTarget = new THREE.Vector2(0, 0);
-  const yawSpring   = makeDampedSpring(4, 1.0);
-  const pitchSpring = makeDampedSpring(4, 1.0);
+  let mouseX = 0;
+  let mouseY = 0;
+  let yawSpring = 0;
+  let pitchSpring = 0;
 
-  // Tween state for cameraLookCloser().
-  const tween = {
-    active: false,
-    start: 0,
-    duration: LOOK_CLOSER_MS,
-    fromPos:  new THREE.Vector3(),
-    toPos:    new THREE.Vector3(),
-    fromLook: new THREE.Vector3(),
-    toLook:   new THREE.Vector3(),
-    easing: bezier.reveal,
-  };
-  let isCloser = false;
-  let mouseInfluence = 1; // dampened while a tween is running
+  // "Look closer" toggle — a 0..1 lerp that drives camera position + lookAt.
+  let lookCloser = false;
+  let camLerp = 0;
+
+  // Scratch vectors (avoid per-frame allocation).
+  const _pos    = new THREE.Vector3();
+  const _look   = new THREE.Vector3();
+  const _closer = new THREE.Vector3();
 
   // --- Mouse handler ------------------------------------------------------
   function onMouseMove(e) {
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
-    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    const y = -(((e.clientY - rect.top) / rect.height) * 2 - 1); // flip: up = +
-    mouseTarget.set(x, y);
+    mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    // Flip Y so up = + (matches camera pitch intuition).
+    mouseY = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
   }
 
   // --- prefers-reduced-motion listener -----------------------------------
@@ -275,9 +293,10 @@ export function createScene(canvas) {
     reducedMotion = e.matches;
     if (reducedMotion) {
       // Snap to neutral so the camera doesn't sit at a stale offset.
-      yawSpring.set(0);
-      pitchSpring.set(0);
-      mouseTarget.set(0, 0);
+      yawSpring = 0;
+      pitchSpring = 0;
+      mouseX = 0;
+      mouseY = 0;
     }
   }
   if (typeof window !== 'undefined' && window.matchMedia) {
@@ -307,96 +326,98 @@ export function createScene(canvas) {
     return clock;
   }
 
-  // --- Resize -------------------------------------------------------------
+  // --- Adaptive-DPR resize (dirty-checked) --------------------------------
+  // Called every tick. When the device-pixel buffer hasn't changed (the
+  // common case) it's two integer comparisons + early return. Research §3.1.
+  //
+  // Signature `(w, h)` is kept for backward-compat with Game3D.svelte which
+  // calls `sceneApi.resize(window.innerWidth, window.innerHeight)`. If
+  // either is omitted, falls back to canvas CSS pixel dims (the correct
+  // source of truth — the drawing buffer should match CSS size × DPR).
   function resize(w, h) {
-    if (!w || !h) return;
-    camera.aspect = w / h;
+    const cssW = (w && h) ? w : (canvas.clientWidth  || window.innerWidth);
+    const cssH = (w && h) ? h : (canvas.clientHeight || window.innerHeight);
+    if (!cssW || !cssH) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.floor(cssW * dpr);
+    const bh = Math.floor(cssH * dpr);
+    // Dirty-check against the device-pixel buffer (canvas.width/height are
+    // the buffer dims set by renderer.setSize).
+    if (canvas.width === bw && canvas.height === bh) return;
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(cssW, cssH, false); // false = don't override CSS
+    camera.aspect = cssW / cssH;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h, false);
+    composer.setSize(cssW, cssH);
   }
 
   // --- Camera "look closer" toggle ---------------------------------------
+  // Toggles a frame-rate-independent lerp between DEFAULT and CLOSER poses.
+  // No tween bookkeeping — the per-frame lerp handles both directions and
+  // naturally eases out as it approaches the target.
   function cameraLookCloser() {
-    tween.fromPos.copy(basePos);
-    tween.fromLook.copy(baseLook);
-    if (isCloser) {
-      tween.toPos.copy(DEFAULT_POS);
-      tween.toLook.copy(DEFAULT_LOOK);
-    } else {
-      tween.toPos.copy(CLOSER_POS);
-      tween.toLook.copy(CLOSER_LOOK);
-    }
-    tween.start = performance.now();
-    tween.active = true;
-    isCloser = !isCloser;
+    lookCloser = !lookCloser;
   }
 
   // --- Animation loop -----------------------------------------------------
-  function tick() {
+  function tick(time) {
     if (disposed) return;
-    const dt = clock.getDelta();
-    const t  = clock.elapsedTime;
 
-    // Drive the look-closer tween.
-    if (tween.active) {
-      const elapsed = performance.now() - tween.start;
-      const k = Math.min(1, Math.max(0, elapsed / tween.duration));
-      const eased = tween.easing(k);
-      basePos.lerpVectors(tween.fromPos,  tween.toPos,  eased);
-      baseLook.lerpVectors(tween.fromLook, tween.toLook, eased);
-      // Dampen mouse-look influence during the tween so they don't fight.
-      // Full influence at the endpoints, zero at the midpoint.
-      mouseInfluence = Math.abs(k - 0.5) * 2;
-      if (k >= 1) {
-        tween.active = false;
-        mouseInfluence = 1;
-      }
-    }
+    // 1) Adaptive-DPR resize — cheap dirty-check every frame.
+    resize();
 
-    // Update mouse-look springs (subtle, smooth).
+    // 2) Delta clamp — prevents teleport-on-refocus (§2.7).
+    const delta = Math.min((time - lastTime) / 1000, MAX_DELTA);
+    lastTime = time;
+    const t = time / 1000;
+
+    // 3) Look-closer lerp toward its target (frame-rate-independent).
+    const targetLerp = lookCloser ? 1 : 0;
+    camLerp += (targetLerp - camLerp) * lerpFactor(delta, LOOK_CLOSER_LAG);
+
+    // 4) Mouse-look springs (subtle, frame-rate-independent).
     if (!reducedMotion) {
-      yawSpring.update(mouseTarget.x * YAW_MAX_RAD, dt);
-      pitchSpring.update(mouseTarget.y * PITCH_MAX_RAD, dt);
+      const targetYaw   = mouseX * YAW_MAX_RAD;
+      const targetPitch = mouseY * PITCH_MAX_RAD;
+      yawSpring   += (targetYaw   - yawSpring)   * lerpFactor(delta, MOUSE_LOOK_LAG);
+      pitchSpring += (targetPitch - pitchSpring) * lerpFactor(delta, MOUSE_LOOK_LAG);
     }
 
-    // Head-bob offsets (sine waves).
-    let bobX = 0;
-    let bobY = 0;
+    // 5) Camera base pose = lerp between DEFAULT and CLOSER.
+    _pos.lerpVectors(DEFAULT_POS,  CLOSER_POS,  camLerp);
+    _look.lerpVectors(DEFAULT_LOOK, CLOSER_LOOK, camLerp);
+
+    // 6) Head-bob offsets (sine waves) on top of the base pose.
     if (!reducedMotion) {
-      bobX = Math.sin(t * 2 * Math.PI * BOB_X_HZ) * BOB_X_AMP;
-      bobY = Math.sin(t * 2 * Math.PI * BOB_Y_HZ) * BOB_Y_AMP;
+      _pos.y += Math.sin(t * BOB_Y_HZ * Math.PI * 2) * BOB_Y_AMP;
+      _pos.x += Math.sin(t * BOB_X_HZ * Math.PI * 2) * BOB_X_AMP;
     }
 
-    // Apply transforms to the camera.
-    camera.position.set(
-      basePos.x + bobX,
-      basePos.y + bobY,
-      basePos.z,
-    );
-    camera.lookAt(baseLook);
+    // 7) Position + orient the camera. lookAt first (sets local Y = world Y),
+    //    then FPS-style yaw (world Y) + pitch (local X after yaw).
+    camera.position.copy(_pos);
+    camera.lookAt(_look);
     if (!reducedMotion) {
-      // lookAt orients local Y = world Y, so rotateY is world-yaw. Then
-      // rotateX pitches around the post-yaw local X (FPS-style).
-      camera.rotateY(yawSpring.get() * mouseInfluence);
-      camera.rotateX(pitchSpring.get() * mouseInfluence);
+      camera.rotateY(yawSpring);
+      camera.rotateX(pitchSpring);
     }
 
-    // Run registered update callbacks (card animations, etc.).
+    // 8) Run registered update callbacks (card animations, avatar breathing).
+    //    They receive the clamped delta + elapsed time.
     if (updateCallbacks.size > 0) {
       for (const fn of updateCallbacks) {
-        try {
-          fn(dt, t);
-        } catch (err) {
-          console.error('[scene update callback]', err);
-        }
+        try { fn(delta, t); }
+        catch (err) { console.error('[scene update callback]', err); }
       }
     }
 
-    renderer.render(scene, camera);
+    // 9) Render via the post-processing composer.
+    composer.render(delta);
     rafId = requestAnimationFrame(tick);
   }
 
-  // Kick off the loop.
+  // Kick off the loop. First frame uses lastTime = performance.now() set
+  // above, so delta on frame 1 is ~0 (no initial lurch).
   rafId = requestAnimationFrame(tick);
 
   // --- Dispose ------------------------------------------------------------
@@ -419,7 +440,10 @@ export function createScene(canvas) {
       reducedMotionMql = null;
     }
     updateCallbacks.clear();
+    composer.dispose();
     disposeObject3D(scene);
+    // Dispose the baked environment texture (it's a GPU resource).
+    if (scene.environment) scene.environment.dispose();
     renderer.dispose();
   }
 
@@ -427,12 +451,91 @@ export function createScene(canvas) {
     scene,
     camera,
     renderer,
+    composer,
     registerUpdate,
     resize,
     dispose,
     cameraLookCloser,
     getClock,
   };
+}
+
+// ---------------------------------------------------------------------------
+// POST-PROCESSING CHAIN
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the EffectComposer pass chain. Order matters — each pass reads the
+ * previous pass's output buffer:
+ *   1. RenderPass       — rasterise scene (beauty + depth) to inputBuffer
+ *   2. N8AOPostPass     — SSAO; reads depth texture (auto-attached by the
+ *                         composer because N8AOPostPass sets needsDepthTexture)
+ *                         and beauty texture, multiplies AO into beauty
+ *   3. Bloom EffectPass — additive mipmap-blur bloom on bright pixels
+ *   4. SMAA EffectPass  — sub-pixel edge enhancement (complements MSAA)
+ *   5. ToneMappingPass  — ACES Filmic; MUST be last so prior passes operate
+ *                         in HDR linear space
+ *
+ * HalfFloat frame buffer lets Bloom accumulate HDR values without clipping
+ * before tone mapping. `multisampling=4` is hardware MSAA on the scene
+ * rasterisation (WebGL2; silently 0 on WebGL1 where SMAA picks up slack).
+ *
+ * DEVIATION FROM SPEC: research §3.2 recommends true TAA (TAAPass). TAA in
+ * Three.js needs camera motion vectors (velocity buffer) to reproject the
+ * previous frame — every animated object must write its screen-space motion
+ * into a velocity target, else moving things leave a smearing trail. For
+ * our scene (flying cards, breathing avatars, bobbing camera) that's a
+ * substantial motion-vector subsystem. MSAA(4) + SMAA(HIGH) gives most of
+ * the visible quality at a fraction of the complexity, with no ghosting.
+ * Revisit TAA if shimmer is still a problem after this lands.
+ */
+function setupPostProcessing(renderer, scene, camera) {
+  const composer = new EffectComposer(renderer, {
+    frameBufferType: THREE.HalfFloatType,  // HDR; lets Bloom accumulate >1
+    multisampling: 4,                      // MSAA on scene rasterisation
+  });
+
+  // 1) Render the scene.
+  composer.addPass(new RenderPass(scene, camera));
+
+  // 2) N8AO — SSAO for crease + contact darkening. Half-res for perf (the
+  //    AO signal is low-frequency, visually lossless after bilateral upscale).
+  //    Color = pure black so AO darkens toward shadow, not a tint. Intensity
+  //    1.5 is moderate; the default of 5 is far too hot for dim lighting.
+  const n8ao = new N8AOPostPass(scene, camera, 1, 1);
+  n8ao.configuration.aoSamples = 16;
+  n8ao.configuration.halfRes = true;
+  n8ao.configuration.color = new THREE.Color(0, 0, 0);
+  n8ao.configuration.intensity = 2.5;
+  // aoRadius is world units; default 5.0 covers creases around cards on the
+  // table and under avatar feet without bleeding AO across the whole scene.
+  composer.addPass(n8ao);
+
+  // 3) Bloom — subtle highlight glow. Threshold 0.6 means only the brightest
+  //    pixels (specular hits on cards, label sprites) bloom; midtones stay
+  //    clean. mipmapBlur gives a soft photographic falloff.
+  composer.addPass(new EffectPass(camera, new BloomEffect({
+    intensity: 0.15,
+    luminanceThreshold: 0.85,
+    mipmapBlur: true,
+  })));
+
+  // 4) SMAA — sub-pixel morphological antialiasing. Catches shader aliasing
+  //    (specular crawl, texture shimmer) that MSAA can't, because MSAA only
+  //    supersamples polygon edges, not pixels shaded inside a triangle.
+  //    HIGH preset is the quality/perf sweet spot.
+  composer.addPass(new EffectPass(camera, new SMAAEffect({
+    preset: SMAAPreset.HIGH,
+  })));
+
+  // 5) ACES Filmic tone mapping — last so every prior pass operated in
+  //    linear HDR. ACES is the de-facto filmic curve since 2016 (§5.4);
+  //    it desaturates highlights instead of clipping them to white.
+  composer.addPass(new EffectPass(camera, new ToneMappingEffect({
+    mode: ToneMappingMode.ACES_FILMIC,
+  })));
+
+  return composer;
 }
 
 export default { createScene, SEAT_POSITIONS, TABLE_RADIUS };

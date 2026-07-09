@@ -54,6 +54,11 @@
     cardsApi = cardsMod;
     sceneApi = createScene(canvas);
 
+    // Wire max anisotropy into the cards system (for crisp text at glancing angles).
+    if (cardsApi.setMaxAnisotropy) {
+      cardsApi.setMaxAnisotropy(sceneApi.renderer.capabilities.getMaxAnisotropy());
+    }
+
     // Register a per-frame hook that updates all avatars + cards.
     sceneApi.registerUpdate((delta) => {
       for (const av of avatars.values()) av.update?.(delta);
@@ -206,21 +211,25 @@
           c.dispose?.();
         }
       }
+      const tableY = cardsApi.TABLE_CARD_Y || 0.06;
       tableCards = subs.map((sub, i) => {
         const pile = sub.cards.map((text) => {
           const c = cardsApi.createCard({ text, isBlack: false });
           sceneApi.scene.add(c.mesh);
-          // Position near table center, with jitter.
+          // Position near table center, with jitter. Raised to tableY (0.06)
+          // to prevent z-fighting with the table surface (research §6.1).
           const angle = (i / subs.length) * Math.PI * 2;
           const radius = 0.6;
           c.mesh.position.set(
-            Math.cos(angle) * radius + (Math.random() - 0.5) * 0.1,
-            0.03 + i * 0.001,
-            Math.sin(angle) * radius + (Math.random() - 0.5) * 0.1,
+            Math.cos(angle) * radius + (Math.random() - 0.5) * 0.08,
+            tableY + i * 0.001,
+            Math.sin(angle) * radius + (Math.random() - 0.5) * 0.08,
           );
           c.mesh.rotation.set(-Math.PI / 2, Math.random() * Math.PI * 2, 0);
           // Face down by default.
           c.setState?.('table-down');
+          // Add a blob shadow under the pile for grounding (research §4.3).
+          if (c.addBlobShadow) c.addBlobShadow(sceneApi.scene);
           return c;
         });
         return pile;
